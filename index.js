@@ -65,7 +65,8 @@ app.get('/', (req, res) => {
 // ==========================
 // 📌API upload-photo เพิ่ม รูปให้ Users
 // ==========================
-app.post("/upload-photo", upload.single("photo"), async (req, res) => {
+app.post("/photo", async (req, res) => {
+
   const user = await getUser(req);
 
   if (!user)
@@ -73,38 +74,22 @@ app.post("/upload-photo", upload.single("photo"), async (req, res) => {
       error: "Unauthorized",
     });
 
-  if (!req.file)
-    return res.status(400).json({
-      error: "No file",
-    });
+  const { url } = req.body;
 
-  const fileName = `${user.id}-${Date.now()}.jpg`;
+  const { data, error } = await supabase
+    .from("photos")
+    .insert({
+      user_id: user.id,
+      url: url,
+    })
+    .select()
+    .single();
 
-  const { error } = await supabase.storage
-    .from("profile")
-    .upload(fileName, req.file.buffer, {
-      contentType: req.file.mimetype,
-      upsert: true,
-    });
-
-  if (error) {
+  if (error)
     return res.status(400).json(error);
-  }
 
-  const { data } = supabase.storage
-    .from("profile")
-    .getPublicUrl(fileName);
-
-  await supabase.from("photos").insert({
-    user_id: user.id,
-    url: data.publicUrl,
-  });
-
-  res.json({
-    photo_url: data.publicUrl,
-  });
+  res.json(data);
 });
-
 
 // ==========================
 // 📌API photo ดู รูปให้ Users คนใดคนหนึ่ง
