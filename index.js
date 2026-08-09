@@ -245,104 +245,121 @@ app.post('/users', async (req, res) => {
 // 🔍 GET USERS (feed)
 // ==========================
 // ==========================
+// ==========================
 // 🔍 GET USERS (feed)
 // ==========================
 app.get('/users', async (req, res) => {
+  try {
+    const user = await getUser(req);
 
-  const user = await getUser(req)
+    if (!user) {
+      return res.status(401).json({
+        error: 'Unauthorized'
+      });
+    }
 
-  if (!user) {
-    return res.status(401).json({
-      error: 'Unauthorized'
-    })
+    const { province } = req.query;
+
+    // ==========================
+    // 1. ดึงคนที่เราเคย swipe
+    // ==========================
+    const {
+      data: swipes,
+      error: swipeError
+    } = await supabase
+      .from('swipes')
+      .select('target_user_id')
+      .eq('user_id', user.id);
+
+    if (swipeError) {
+      console.error('GET SWIPES ERROR:', swipeError);
+
+      return res.status(400).json({
+        error: swipeError.message
+      });
+    }
+
+    const swipedIds = (swipes ?? [])
+      .map(item => item.target_user_id)
+      .filter(Boolean);
+
+    console.log('CURRENT USER:', user.id);
+    console.log('SWIPED IDS:', swipedIds);
+
+    // ==========================
+    // 2. ดึง Users
+    // ==========================
+    let query = supabase
+      .from('users')
+      .select(`
+        *,
+        photos (
+          url
+        )
+      `)
+      .neq('id', user.id);
+
+    // จังหวัด
+    if (province) {
+      query = query.eq('province', province);
+    }
+
+    // ==========================
+    // 3. ไม่เอาคนที่เคย Swipe
+    // ==========================
+    if (swipedIds.length > 0) {
+      query = query.not(
+        'id',
+        'in',
+        `(${swipedIds.map(id => `"${id}"`).join(',')})`
+      );
+    }
+
+    const {
+      data,
+      error
+    } = await query;
+
+    if (error) {
+      console.error('GET USERS ERROR:', error);
+
+      return res.status(400).json({
+        error: error.message
+      });
+    }
+
+    // ==========================
+    // 4. Format
+    // ==========================
+    const result = (data ?? []).map(u => ({
+      id: u.id,
+      phone: u.phone,
+      name: u.name,
+      age: u.age,
+      gender: u.gender,
+      province: u.province,
+      bio: u.bio,
+      created_at: u.created_at,
+
+      photo_url:
+        u.photos &&
+        u.photos.length > 0
+          ? u.photos[0].url
+          : null
+    }));
+
+    console.log('USERS LEFT:', result.length);
+
+    res.json(result);
+
+  } catch (err) {
+    console.error('GET USERS EXCEPTION:', err);
+
+    res.status(500).json({
+      error: err.message
+    });
   }
-
-  const { province } = req.query
-
-  // --------------------------
-  // 1. ดึงคนที่เราเคย swipe
-  // --------------------------
-  const {
-    data: swipedUsers,
-    error: swipeError
-  } = await supabase
-    .from('swipes')
-    .select('target_user_id')
-    .eq('user_id', user.id)
-
-  if (swipeError) {
-    return res.status(400).json(swipeError)
-  }
-
-  const swipedIds =
-    swipedUsers?.map(
-      item => item.target_user_id
-    ) ?? []
-
-  // --------------------------
-  // 2. ดึง users
-  // --------------------------
-  let query = supabase
-    .from('users')
-    .select(`
-      *,
-      photos (
-        url
-      )
-    `)
-
-  // จังหวัด
-  if (province) {
-    query = query.eq('province', province)
-  }
-
-  // ไม่เอาตัวเอง
-  query = query.neq('id', user.id)
-
-  // --------------------------
-  // 3. ไม่เอาคนที่เคย swipe
-  // --------------------------
-  if (swipedIds.length > 0) {
-    query = query.not(
-      'id',
-      'in',
-      `(${swipedIds.join(',')})`
-    )
-  }
-
-  const {
-    data,
-    error
-  } = await query
-
-  if (error) {
-    console.error('GET USERS ERROR:', error)
-
-    return res.status(400).json(error)
-  }
-
-  // --------------------------
-  // 4. Format response
-  // --------------------------
-  const result = data.map((u) => ({
-    id: u.id,
-    phone: u.phone,
-    name: u.name,
-    age: u.age,
-    gender: u.gender,
-    province: u.province,
-    bio: u.bio,
-    created_at: u.created_at,
-
-    photo_url:
-      u.photos &&
-      u.photos.length > 0
-        ? u.photos[0].url
-        : null
-  }))
-
-  res.json(result)
-})
+});
 
 
 
@@ -351,60 +368,88 @@ app.get('/users', async (req, res) => {
 // 👉 SWIPE
 // ==========================
 
+// ==========================
+// 👉 SWIPE
+// ==========================
 app.post('/swipe', async (req, res) => {
+  try {
+    const user = await getUser(req);
 
-  const user = await getUser(req)
+    if (!user) {
+      return res.status(401).json({
+        error: 'Unauthorized'
+      });
+    }
 
-  if (!user) {
-    return res.status(401).json({
-      error: 'Unauthorized'
-    })
+    const {
+      target_user_id,
+      action
+    } = req.body;
+
+    // ตรวจ target
+    if (!target_user_id) {
+      return res.status(400).json({
+        error: 'target_user_id is required'
+      });
+    }
+
+    // ตรวจ action
+    if (!['like', 'dislike'].includes(action)) {
+      return res.status(400).json({
+        error: 'Invalid action'
+      });
+    }
+
+    // ห้าม swipe ตัวเอง
+    if (target_user_id === user.id) {
+      return res.status(400).json({
+        error: 'Cannot swipe yourself'
+      });
+    }
+
+    // ==========================
+    // บันทึก Swipe
+    // ==========================
+    const {
+      data,
+      error
+    } = await supabase
+      .from('swipes')
+      .upsert(
+        {
+          user_id: user.id,
+          target_user_id,
+          action
+        },
+        {
+          onConflict: 'user_id,target_user_id'
+        }
+      )
+      .select()
+      .single();
+
+    if (error) {
+      console.error('SWIPE ERROR:', error);
+
+      return res.status(400).json({
+        error: error.message
+      });
+    }
+
+    console.log(
+      `USER ${user.id} -> ${action} -> ${target_user_id}`
+    );
+
+    res.json(data);
+
+  } catch (err) {
+    console.error('SWIPE EXCEPTION:', err);
+
+    res.status(500).json({
+      error: err.message
+    });
   }
-
-  const { target_user_id, action } = req.body
-
-  if (!target_user_id) {
-    return res.status(400).json({
-      error: 'target_user_id is required'
-    })
-  }
-
-  if (!['like', 'dislike'].includes(action)) {
-    return res.status(400).json({
-      error: 'Invalid action'
-    })
-  }
-
-  // ตรวจว่า target ไม่ใช่ตัวเอง
-  if (target_user_id === user.id) {
-    return res.status(400).json({
-      error: 'Cannot swipe yourself'
-    })
-  }
-
-  const { data, error } = await supabase
-    .from('swipes')
-    .upsert(
-      {
-        user_id: user.id,
-        target_user_id,
-        action
-      },
-      {
-        onConflict: 'user_id,target_user_id'
-      }
-    )
-    .select()
-    .single()
-
-  if (error) {
-    console.error('SWIPE ERROR:', error)
-
-    return res.status(400).json(error)
-  }
-
-  res.json(data)
-})
+});
 
 
 // ==========================
